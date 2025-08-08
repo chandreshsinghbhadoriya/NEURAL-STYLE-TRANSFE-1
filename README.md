@@ -56,3 +56,7 @@ Optimization:
 The generated image (initially a copy of the content image or noise) is iteratively updated using gradient descent.
 
 The goal is to minimize the total loss, i.e., balance content and style.
+
+*OUTPUT 
+<img width="243" height="208" alt="image" src="https://github.com/user-attachments/assets/54ce1214-816b-41bc-b7dd-a94407b4a7b3" />
+
