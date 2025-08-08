@@ -1,0 +1,152 @@
+import tensorflow as tf
+import matplotlib.pyplot as plt
+import numpy as np
+from tensorflow.keras.applications import vgg19
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
+from tensorflow.image import resize
+
+#  Load and preprocess images
+
+def load_and_process_img(path_to_img, max_dim=512):
+    img = load_img(path_to_img)
+    img = img_to_array(img)
+    img = tf.convert_to_tensor(img)
+    img = tf.image.convert_image_dtype(img, tf.float32)
+
+    shape = tf.cast(tf.shape(img)[:-1], tf.float32)
+    long_dim = max(shape)
+    scale = max_dim / long_dim
+    new_shape = tf.cast(shape * scale, tf.int32)
+
+    img = tf.image.resize(img, new_shape)
+    img = img[tf.newaxis, :]  # Add batch dimension
+    return img
+
+def deprocess_img(processed_img):
+    x = processed_img.numpy()
+    x = x.squeeze()
+    x = np.clip(x, 0, 1)
+    return x
+
+#  Define content and style layers
+
+content_layers = ['block5_conv2']
+style_layers = [
+    'block1_conv1',
+    'block2_conv1',
+    'block3_conv1',
+    'block4_conv1',
+    'block5_conv1'
+]
+
+num_content_layers = len(content_layers)
+num_style_layers = len(style_layers)
+
+# --- Step 3: Load the VGG19 model ---
+
+def vgg_layers(layer_names):
+    """Creates a VGG19 model that returns a list of intermediate output values."""
+    vgg = vgg19.VGG19(include_top=False, weights='imagenet')
+    vgg.trainable = False
+    outputs = [vgg.get_layer(name).output for name in layer_names]
+    model = tf.keras.Model([vgg.input], outputs)
+    return model
+
+#  Extract style and content 
+
+def gram_matrix(input_tensor):
+    result = tf.linalg.einsum('bijc,bijd->bcd', input_tensor, input_tensor)
+    input_shape = tf.shape(input_tensor)
+    num_locations = tf.cast(input_shape[1]*input_shape[2], tf.float32)
+    return result / num_locations
+
+class StyleContentModel(tf.keras.models.Model):
+    def __init__(self, style_layers, content_layers):
+        super().__init__()
+        self.vgg = vgg_layers(style_layers + content_layers)
+        self.vgg.trainable = False
+        self.style_layers = style_layers
+        self.content_layers = content_layers
+
+    def call(self, inputs):
+        inputs = inputs * 255.0
+        preprocessed_input = vgg19.preprocess_input(inputs)
+        outputs = self.vgg(preprocessed_input)
+        style_outputs, content_outputs = (outputs[:num_style_layers],
+                                          outputs[num_style_layers:])
+
+        style_outputs = [gram_matrix(style_output) for style_output in style_outputs]
+
+        content_dict = {content_name: value
+                        for content_name, value in zip(self.content_layers, content_outputs)}
+
+        style_dict = {style_name: value
+                      for style_name, value in zip(self.style_layers, style_outputs)}
+
+        return {'content': content_dict, 'style': style_dict}
+
+#   Perform style transfer 
+
+def style_transfer(content_path, style_path, epochs=10, steps_per_epoch=100):
+
+    content_image = load_and_process_img(content_path)
+    style_image = load_and_process_img(style_path)
+
+    extractor = StyleContentModel(style_layers, content_layers)
+    results = extractor(tf.constant(content_image))
+
+    style_targets = results['style']
+    content_targets = results['content']
+
+    image = tf.Variable(content_image)
+
+    opt = tf.optimizers.Adam(learning_rate=0.02)
+
+    style_weight = 1e-2
+    content_weight = 1e4
+
+    @tf.function()
+    def train_step(image):
+        with tf.GradientTape() as tape:
+            outputs = extractor(image)
+            style_outputs = outputs['style']
+            content_outputs = outputs['content']
+
+            style_loss = tf.add_n([
+                tf.reduce_mean((style_outputs[name] - style_targets[name])**2)
+                for name in style_outputs
+            ])
+            style_loss *= style_weight / num_style_layers
+
+            content_loss = tf.add_n([
+                tf.reduce_mean((content_outputs[name] - content_targets[name])**2)
+                for name in content_outputs
+            ])
+            content_loss *= content_weight / num_content_layers
+
+            loss = style_loss + content_loss
+
+        grad = tape.gradient(loss, image)
+        opt.apply_gradients([(grad, image)])
+        image.assign(tf.clip_by_value(image, 0.0, 1.0))
+
+    for n in range(epochs):
+        for m in range(steps_per_epoch):
+            train_step(image)
+        print(f"Epoch {n+1}/{epochs} completed.")
+
+    return image
+
+#  Step 6: Run the model and show result
+
+# Replace with your local image paths or URLs
+content_path = 'content.jpg'  # e.g., a photo of a landscape
+style_path = 'style.jpg'      # e.g., Van Gogh painting
+
+stylized_image = style_transfer(content_path, style_path)
+final_image = deprocess_img(stylized_image)
+
+plt.imshow(final_image)
+plt.title("Stylized Image")
+plt.axis('off')
+plt.show()
